@@ -1,0 +1,48 @@
+#include <SoftwareSerial.h>
+
+// Configure SoftwareSerial pins:
+// Pin 12 = Arduino RX (Connects directly to Radar TX)
+// Pin 13 = Arduino TX (Connects to Radar RX via your 1kΩ / 2kΩ voltage divider)
+SoftwareSerial radarSerial(12, 13); 
+
+void setup() {
+  // Initialize the hardware serial port for your computer's Serial Monitor
+  // Note: Set your Serial Monitor baud rate to 115200 to match this!
+  Serial.begin(115200);
+  while (!Serial) {
+    ; // Wait for serial port to connect (needed for native USB Arduinos)
+  }
+  
+  // Initialize communication with the Micradar module
+  // Most 60GHz Micradar sleep modules default to 115200 bps
+  radarSerial.begin(115200);
+  
+  Serial.println("--- Micradar R60ABD1 Reader Initialized ---");
+  Serial.println("Listening for radar data frames (Pins 12/13)...");
+}
+
+void loop() {
+  // Check if data bytes are arriving from the radar module
+  if (radarSerial.available()) {
+    byte incomingByte = radarSerial.read();
+    
+    // Print the byte in clean Hexadecimal format
+    // If the byte is less than 0x10 (16), print a leading '0' for neat formatting
+    if (incomingByte < 0x10) {
+      Serial.print("0");
+    }
+    Serial.print(incomingByte, HEX);
+    
+    // Add a space between bytes to make the data frames easy to scan
+    Serial.print(" ");
+  }else{
+    Serial.print("no signal is recieved");
+  }
+
+  // Optional: If you type commands into the Serial Monitor, 
+  // this will pass them along to the radar module
+  if (Serial.available()) {
+    byte commandByte = Serial.read();
+    radarSerial.write(commandByte);
+  }
+}
