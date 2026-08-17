@@ -1,0 +1,78 @@
+#include <WiFiS3.h>
+#include <WiFiUdp.h>
+#include <Servo.h>
+
+const char *ssid = "BreathNet";
+const char *password = "12345678";
+
+WiFiUDP udp;
+unsigned int localPort = 4210;
+char packetBuffer[255];
+
+Servo myServo1;
+Servo myServo2;
+Servo myServo3;
+
+const int SERVO_PIN_1 = 9; // Pin D9 on UNO R4 WiFi
+const int SERVO_PIN_2 = 10;
+const int SERVO_PIN_3 = 11;
+
+float targetAngle = 90;
+
+float smoothedAngle1 = 90;
+float smoothedAngle2 = 90;
+float smoothedAngle3 = 90;
+
+void setup() {
+  Serial.begin(115200);
+  
+  myServo1.write(90);
+  myServo2.write(90);
+  myServo3.write(90);
+
+  myServo1.attach(SERVO_PIN_1);
+  myServo2.attach(SERVO_PIN_2);
+  myServo3.attach(SERVO_PIN_3);
+
+  Serial.print("Connecting to BreathNet AP...");
+  while (WiFi.begin(ssid, password) != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected!");
+
+  udp.begin(localPort);
+}
+
+void loop() {
+  int packetSize = udp.parsePacket();
+  if (packetSize) {
+    int len = udp.read(packetBuffer, 255);
+    if (len > 0) {
+      packetBuffer[len] = 0;
+    }
+    float respSignal = atof(packetBuffer);
+
+    // Map respiration (-15 to +15) to servo angle (30 to 150 deg)
+    targetAngle = map(respSignal, 0, 15.0, 90, 180);
+    targetAngle = constrain(targetAngle, 0.0, 180.0);
+  }
+
+  // UPDATED: Extremely slow, smooth movement easing
+  // The smaller the first number (and larger the second), the slower it moves.
+  
+  // Servo 1: Moves 2% per frame (Smooth, relaxed breathing)
+  smoothedAngle1 = (0.15 * targetAngle) + (0.85 * smoothedAngle1);
+  
+  // Servo 2: Moves 1% per frame (Very slow, heavy feeling)
+  smoothedAngle2 = (0.15 * targetAngle) + (0.85 * smoothedAngle2);
+  
+  // Servo 3: Moves 3% per frame (Slightly more responsive, but still slow)
+  smoothedAngle3 = (0.15 * targetAngle) + (0.85 * smoothedAngle3);
+
+  myServo1.write((int)smoothedAngle1);
+  myServo2.write((int)smoothedAngle2);
+  myServo3.write((int)smoothedAngle3);
+
+  delay(20);
+}
