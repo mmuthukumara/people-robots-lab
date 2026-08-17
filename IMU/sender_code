@@ -1,0 +1,68 @@
+#include <Wire.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+const int MPU_ADDR = 0x68;
+
+const char *ssid = "BreathNet";
+const char *password = "12345678";
+
+WiFiUDP udp;
+const char *udpAddress = "192.168.4.255"; // Broadcast address
+const int udpPort = 4210;
+
+float basePitch = 0.0, baseRoll = 0.0;
+float filteredVal = 0.0;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Wire.begin(A4, A5);
+
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0x00);
+  Wire.endTransmission();
+
+  // Initialize Access Point
+  WiFi.softAP(ssid, password);
+  Serial.println("AP Created: BreathNet");
+  udp.begin(udpPort);
+}
+
+void loop() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 6, true);
+
+  if (Wire.available() >= 6) {
+    int16_t rawX = (Wire.read() << 8) | Wire.read();
+    int16_t rawY = (Wire.read() << 8) | Wire.read();
+    int16_t rawZ = (Wire.read() << 8) | Wire.read();
+
+    float ax = (float)rawX / 16384.0;
+    float ay = (float)rawY / 16384.0;
+    float az = (float)rawZ / 16384.0;
+
+    float pitch = atan2(-ax, sqrt(ay * ay + az * az)) * (180.0 / M_PI);
+    float roll  = atan2(ay, az) * (180.0 / M_PI);
+
+    if (basePitch == 0.0) { basePitch = pitch; baseRoll = roll; }
+    basePitch = (0.01 * pitch) + (0.99 * basePitch);
+    baseRoll  = (0.01 * roll)  + (0.99 * baseRoll);
+
+    float dPitch = pitch - basePitch;
+    float dRoll  = roll - baseRoll;
+    float currentDev = (abs(dPitch) > abs(dRoll)) ? dPitch : dRoll;
+
+    filteredVal = (0.1 * currentDev) + (0.9 * filteredVal);
+    float respSignal = filteredVal * 20.0;
+
+    // Send UDP packet
+    udp.beginPacket(udpAddress, udpPort);
+    udp.print(respSignal);
+    udp.endPacket();
+  }
+  delay(40);
+}
