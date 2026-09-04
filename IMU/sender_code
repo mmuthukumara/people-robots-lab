@@ -1,68 +1,234 @@
 #include <Wire.h>
+
 #include <WiFi.h>
+
 #include <WiFiUdp.h>
 
-const int MPU_ADDR = 0x68;
 
+
+const int MPU_ADDR = 0x68;
 const char *ssid = "BreathNet";
 const char *password = "12345678";
-
 WiFiUDP udp;
-const char *udpAddress = "192.168.4.255"; // Broadcast address
+const char *udpAddress = "192.168.4.255";
 const int udpPort = 4210;
 
+
+
+// IMU & Smoothing Variables
 float basePitch = 0.0, baseRoll = 0.0;
 float filteredVal = 0.0;
+int countVal = 0;
+float readingsArray[15][3] = {0};
+
+
+
+// Pace Tracking Variables
+
+unsigned long lastBreathTime = 0;
+unsigned long breathPeriods[5] = {0};
+int breathIndex = 0;
+int totalBreathsCaught = 0;
+float avgPeriodMs = 0.0;
+bool isExhaling = true;
+
+
+
+// --- NEW ENTRAINMENT VARIABLES ---
+
+float currentPhase = 0.0;
+
+float guidedPeriodMs = 0.0;
+
+unsigned long lastLoopTime = 0;
+
+unsigned long mirrorStartTime = 0;
+
+bool isMirroring = false;
+
+const float MAX_RELAX_PERIOD = 8000.0; // 8 seconds
+
+
 
 void setup() {
+
   Serial.begin(115200);
+
   delay(1000);
-  Wire.begin(A4, A5);
+
+  Wire.begin(21, 22);
+
+
 
   Wire.beginTransmission(MPU_ADDR);
+
   Wire.write(0x6B);
+
   Wire.write(0x00);
+
   Wire.endTransmission();
 
-  // Initialize Access Point
+
+
   WiFi.softAP(ssid, password);
+
   Serial.println("AP Created: BreathNet");
+
   udp.begin(udpPort);
+
+ 
+
+  lastLoopTime = millis();
+
 }
 
+
+
 void loop() {
+
   Wire.beginTransmission(MPU_ADDR);
+
   Wire.write(0x3B);
+
   Wire.endTransmission(false);
-  Wire.requestFrom(MPU_ADDR, 6, true);
+
+  Wire.requestFrom((uint8_t)MPU_ADDR, (size_t)6, true);
+
+
 
   if (Wire.available() >= 6) {
+
     int16_t rawX = (Wire.read() << 8) | Wire.read();
+
     int16_t rawY = (Wire.read() << 8) | Wire.read();
+
     int16_t rawZ = (Wire.read() << 8) | Wire.read();
 
+ 
+
     float ax = (float)rawX / 16384.0;
+
     float ay = (float)rawY / 16384.0;
+
     float az = (float)rawZ / 16384.0;
 
-    float pitch = atan2(-ax, sqrt(ay * ay + az * az)) * (180.0 / M_PI);
-    float roll  = atan2(ay, az) * (180.0 / M_PI);
+   
+
+    // 15-point Circular Buffer
+
+    readingsArray[countVal][0] = ax;
+
+    readingsArray[countVal][1] = ay;
+
+    readingsArray[countVal][2] = az;  
+
+
+
+    countVal++;
+
+    if(countVal == 15){ countVal = 0; }
+
+   
+
+    float avgX = 0.0, avgY = 0.0, avgZ = 0.0;
+
+    for(int i = 0; i < 15; ++i){
+
+      avgX += readingsArray[i][0];
+
+      avgY += readingsArray[i][1];
+
+      avgZ += readingsArray[i][2];
+
+    }
+
+    float finalAx = avgX/15.0;
+
+    float finalAy = avgY/15.0;
+
+    float finalAz = avgZ/15.0;
+
+
+
+    // Posture filtering
+
+    float pitch = atan2(-finalAx, sqrt(finalAy * finalAy + finalAz * finalAz)) * (180.0 / M_PI);
+
+    float roll  = atan2(finalAy, finalAz) * (180.0 / M_PI);
+
+
 
     if (basePitch == 0.0) { basePitch = pitch; baseRoll = roll; }
     basePitch = (0.01 * pitch) + (0.99 * basePitch);
     baseRoll  = (0.01 * roll)  + (0.99 * baseRoll);
-
     float dPitch = pitch - basePitch;
     float dRoll  = roll - baseRoll;
     float currentDev = (abs(dPitch) > abs(dRoll)) ? dPitch : dRoll;
-
-    filteredVal = (0.1 * currentDev) + (0.9 * filteredVal);
+    filteredVal = (0.05 * currentDev) + (0.95 * filteredVal);
     float respSignal = filteredVal * 20.0;
+    float outputSignal = 0.0;
+    // --- ZERO-CROSSING PACE DETECTOR ---
+    // If the signal crosses above 1.0, count it as an inhale
+    if (isExhaling && respSignal > 1.0) {
+      unsigned long now = millis();
+      unsigned long currentPeriod = now - lastBreathTime;
+      // Ignore false positives (breaths faster than 1.5s or slower than 10s)
+      if (currentPeriod > 1500 && currentPeriod < 25000) {
+        breathPeriods[breathIndex] = currentPeriod;
+        breathIndex = (breathIndex + 1) % 5;
+        if (totalBreathsCaught < 5) {
+          totalBreathsCaught++;
+        }
+        // Calculate new average
+        unsigned long sum = 0;
+        for (int i = 0; i < totalBreathsCaught; i++) {
+          sum += breathPeriods[i];
+        }
+        avgPeriodMs = (float)sum / totalBreathsCaught;
+      }
+      lastBreathTime = now;
+      isExhaling = false;
+    }
+    // If signal crosses below -1.0, count it as an exhale
+    else if (!isExhaling && respSignal < -1.0) {
+      isExhaling = true;
+    }
+   // --- 3-PHASE SIGNAL GENERATION ---
+    unsigned long nowTime = millis();
+    unsigned long dt = nowTime - lastLoopTime;
+    lastLoopTime = nowTime;
+    if (totalBreathsCaught < 5) {
+      // PHASE 1: Learning Mode (Live tracking)
+      outputSignal = (respSignal / 2.0) + 7.5;
+      outputSignal = constrain(outputSignal, 0.0, 15.0);
+      guidedPeriodMs = avgPeriodMs;
+    }
+    else {
+      // Trigger the 1-minute timer the moment we hit 5 breaths
+      if (!isMirroring) {
+        isMirroring = true;
+        mirrorStartTime = nowTime;
+      }
 
-    // Send UDP packet
+      if (nowTime - mirrorStartTime < 60000) {
+        // PHASE 2: Mirror Mode (Match user pace exactly for 60s)
+        guidedPeriodMs = avgPeriodMs;
+      } else {
+        // PHASE 3: Entrainment Mode (Slow down gently)
+        if (guidedPeriodMs < MAX_RELAX_PERIOD) {
+          guidedPeriodMs += 0.5; // Slows down by 25ms per second
+        }
+      }
+      // PHASE ACCUMULATOR: Draws the perfect wave without glitching
+      currentPhase += (float)dt / guidedPeriodMs;
+      if (currentPhase >= 1.0) { currentPhase -= 1.0; }
+      outputSignal = (-cos(currentPhase * 2.0 * M_PI) + 1.0) * 7.5;
+    }
+
     udp.beginPacket(udpAddress, udpPort);
-    udp.print(respSignal);
+    udp.print(outputSignal);
     udp.endPacket();
   }
-  delay(40);
+  delay(20);
+
 }
