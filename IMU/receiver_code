@@ -18,12 +18,12 @@ const int SERVO_PIN_2 = 10;
 const int SERVO_PIN_3 = 11;
 
 // Base target signal
-float targetMicroseconds = 1500.0; // 1500us is center (90 degrees)
+float targetMicroseconds = 544.0; // 1500us is center (90 degrees)
 
 // Individual smoothed states
-float smoothedUS1 = 1500.0;
-float smoothedUS2 = 1500.0;
-float smoothedUS3 = 1500.0;
+float smoothedUS1 = 544.0;
+float smoothedUS2 = 544.0;
+float smoothedUS3 = 544.0;
 
 // NEW: Independent timer
 unsigned long lastServoUpdate = 0;
@@ -65,10 +65,10 @@ void loop() {
     float respSignal = atof(packetBuffer);
 
     // Map respiration (0 to 15.0) to microseconds (1500 to 2500, which is 90 to 180 degrees)
-    targetMicroseconds = mapFloat(respSignal, 0.0, 15.0, 1500.0, 2500.0);
+    targetMicroseconds = mapFloat(respSignal, 0.0, 15.0, 544.0, 1678.0);
     
     // Constrain to safe servo limits
-    targetMicroseconds = constrain(targetMicroseconds, 1500.0, 2500.0);
+    targetMicroseconds = constrain(targetMicroseconds, 544.0, 1678.0);
   }
 
   // Adjust these multipliers. 
