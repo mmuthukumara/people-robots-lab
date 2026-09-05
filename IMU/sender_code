@@ -11,6 +11,10 @@ WiFiUDP udp;
 const char *udpAddress = "192.168.4.255"; 
 const int udpPort = 4210;
 
+// --- BUTTON CONFIGURATION ---
+const int buttonPin = 2;
+bool systemActive = false;
+
 // IMU & Smoothing Variables
 float basePitch = 0.0, baseRoll = 0.0;
 float filteredVal = 0.0;
@@ -42,6 +46,9 @@ void setup() {
   Wire.write(0x6B);
   Wire.write(0x00);
   Wire.endTransmission();
+
+  // Set up the button
+  pinMode(buttonPin, INPUT_PULLUP);
 
   WiFi.softAP(ssid, password);
   Serial.println("AP Created: BreathNet");
@@ -97,71 +104,87 @@ void loop() {
 
     filteredVal = (0.05 * currentDev) + (0.95 * filteredVal);
     float respSignal = filteredVal * 20.0;
-    float outputSignal = 0.0;
+    
+    // Default resting signal while waiting for button press
+    float outputSignal = 7.5; 
 
-    // --- ZERO-CROSSING PACE DETECTOR ---
-    // If the signal crosses above 1.0, count it as an inhale
-    if (isExhaling && respSignal > 1.0) {
-      unsigned long now = millis();
-      unsigned long currentPeriod = now - lastBreathTime;
-      
-      // Ignore false positives (breaths faster than 1.5s or slower than 10s)
-      if (currentPeriod > 1500 && currentPeriod < 25000) {
-        breathPeriods[breathIndex] = currentPeriod;
-        breathIndex = (breathIndex + 1) % 5;
+    // --- BUTTON START LOGIC ---
+    if (!systemActive) {
+      if (digitalRead(buttonPin) == LOW) {
+        systemActive = true;
+        Serial.println("\nSystem Activated! Start breathing.");
+        delay(500); // Debounce to prevent accidental double clicks
         
-        if (totalBreathsCaught < 5) {
-          totalBreathsCaught++;
-        }
-
-        // Calculate new average
-        unsigned long sum = 0;
-        for (int i = 0; i < totalBreathsCaught; i++) {
-          sum += breathPeriods[i];
-        }
-        avgPeriodMs = (float)sum / totalBreathsCaught;
+        // Reset timers so the math starts completely fresh
+        lastBreathTime = millis();
+        lastLoopTime = millis();
       }
-      
-      lastBreathTime = now;
-      isExhaling = false;
-    } 
-    // If signal crosses below -1.0, count it as an exhale
-    else if (!isExhaling && respSignal < -1.0) {
-      isExhaling = true;
-    }
-
-   // --- 3-PHASE SIGNAL GENERATION ---
-    unsigned long nowTime = millis();
-    unsigned long dt = nowTime - lastLoopTime;
-    lastLoopTime = nowTime;
-
-    if (totalBreathsCaught < 5) {
-      // PHASE 1: Learning Mode (Live tracking)
-      outputSignal = (respSignal / 2.0) + 7.5; 
-      outputSignal = constrain(outputSignal, 0.0, 15.0);
-      guidedPeriodMs = avgPeriodMs; 
     } 
     else {
-      // Trigger the 1-minute timer the moment we hit 5 breaths
-      if (!isMirroring) {
-        isMirroring = true;
-        mirrorStartTime = nowTime;
-      }
+      // --- ZERO-CROSSING PACE DETECTOR ---
+      // If the signal crosses above 1.0, count it as an inhale
+      if (isExhaling && respSignal > 1.0) {
+        unsigned long now = millis();
+        unsigned long currentPeriod = now - lastBreathTime;
+        
+        // Ignore false positives (breaths faster than 1.5s or slower than 10s)
+        if (currentPeriod > 1500 && currentPeriod < 10000) {
+          breathPeriods[breathIndex] = currentPeriod;
+          breathIndex = (breathIndex + 1) % 5;
+          
+          if (totalBreathsCaught < 5) {
+            totalBreathsCaught++;
+          }
 
-      if (nowTime - mirrorStartTime < 60000) {
-        // PHASE 2: Mirror Mode (Match user pace exactly for 60s)
-        guidedPeriodMs = avgPeriodMs; 
-      } else {
-        // PHASE 3: Entrainment Mode (Slow down gently)
-        if (guidedPeriodMs < MAX_RELAX_PERIOD) {
-          guidedPeriodMs += 0.5; // Slows down by 25ms per second
+          // Calculate new average
+          unsigned long sum = 0;
+          for (int i = 0; i < totalBreathsCaught; i++) {
+            sum += breathPeriods[i];
+          }
+          avgPeriodMs = (float)sum / totalBreathsCaught;
         }
+        
+        lastBreathTime = now;
+        isExhaling = false;
+      } 
+      // If signal crosses below -1.0, count it as an exhale
+      else if (!isExhaling && respSignal < -1.0) {
+        isExhaling = true;
       }
 
-      // PHASE ACCUMULATOR: Draws the perfect wave without glitching
-      currentPhase += (float)dt / guidedPeriodMs;
-      if (currentPhase >= 1.0) { currentPhase -= 1.0; }
-      outputSignal = (-cos(currentPhase * 2.0 * M_PI) + 1.0) * 7.5; 
+      // --- 3-PHASE SIGNAL GENERATION ---
+      unsigned long nowTime = millis();
+      unsigned long dt = nowTime - lastLoopTime;
+      lastLoopTime = nowTime;
+
+      if (totalBreathsCaught < 5) {
+        // PHASE 1: Learning Mode (Live tracking)
+        outputSignal = (respSignal / 2.0) + 7.5; 
+        outputSignal = constrain(outputSignal, 0.0, 15.0);
+        guidedPeriodMs = avgPeriodMs; 
+      } 
+      else {
+        // Trigger the 1-minute timer the moment we hit 5 breaths
+        if (!isMirroring) {
+          isMirroring = true;
+          mirrorStartTime = nowTime;
+        }
+
+        if (nowTime - mirrorStartTime < 60000) {
+          // PHASE 2: Mirror Mode (Match user pace exactly for 60s)
+          guidedPeriodMs = avgPeriodMs; 
+        } else {
+          // PHASE 3: Entrainment Mode (Slow down gently)
+          if (guidedPeriodMs < MAX_RELAX_PERIOD) {
+            guidedPeriodMs += 0.5; // Slows down by 25ms per second
+          }
+        }
+
+        // PHASE ACCUMULATOR: Draws the perfect wave without glitching
+        currentPhase += (float)dt / guidedPeriodMs;
+        if (currentPhase >= 1.0) { currentPhase -= 1.0; }
+        outputSignal = (-cos(currentPhase * 2.0 * M_PI) + 1.0) * 7.5; 
+      }
     }
 
     udp.beginPacket(udpAddress, udpPort);
